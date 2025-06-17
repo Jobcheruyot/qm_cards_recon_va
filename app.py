@@ -121,43 +121,89 @@ rrntable = pd.merge(
 # ----------- Identify unmatched branch rows for key export -----------
 missing_branch_rows = merged_cards[merged_cards['branch'].isna()]
 
-# ---------- CARD SUMMARY ----------
+# ---------- CARD SUMMARY (FULL LOGIC) ----------
 aspire['AMOUNT'] = pd.to_numeric(aspire['AMOUNT'], errors='coerce')
 merged_cards['Purchase'] = pd.to_numeric(merged_cards['Purchase'], errors='coerce')
 
+# 1. Base: unique store names with index
 card_summary = aspire['STORE_NAME'].dropna().drop_duplicates().sort_values().reset_index(drop=True).to_frame(name='STORE_NAME')
 card_summary.index = card_summary.index + 1
 card_summary.reset_index(inplace=True)
 card_summary.rename(columns={'index': 'No'}, inplace=True)
 
+# 2. Aspire_Zed
 aspire_sums = aspire.groupby('STORE_NAME')['AMOUNT'].sum().reset_index()
 aspire_sums = aspire_sums.rename(columns={'AMOUNT': 'Aspire_Zed'})
 card_summary = card_summary.merge(aspire_sums, on='STORE_NAME', how='left')
 card_summary['Aspire_Zed'] = card_summary['Aspire_Zed'].fillna(0)
 
-kcb_grouped = merged_cards[merged_cards['Source'] == 'KCB'].groupby('branch')['Purchase'].sum().reset_index().rename(columns={'branch': 'STORE_NAME', 'Purchase': 'kcb_paid'})
-equity_grouped = merged_cards[merged_cards['Source'] == 'Equity'].groupby('branch')['Purchase'].sum().reset_index().rename(columns={'branch': 'STORE_NAME', 'Purchase': 'equity_paid'})
+# 3. kcb_paid
+kcb_grouped = merged_cards[merged_cards['Source'].str.upper() == 'KCB'].groupby('branch')['Purchase'].sum().reset_index()
+kcb_grouped.columns = ['STORE_NAME', 'kcb_paid']
 card_summary = card_summary.merge(kcb_grouped, on='STORE_NAME', how='left')
 card_summary['kcb_paid'] = card_summary['kcb_paid'].fillna(0)
+
+# 4. equity_paid
+equity_grouped = merged_cards[merged_cards['Source'].str.upper() == 'EQUITY'].groupby('branch')['Purchase'].sum().reset_index()
+equity_grouped.columns = ['STORE_NAME', 'equity_paid']
 card_summary = card_summary.merge(equity_grouped, on='STORE_NAME', how='left')
 card_summary['equity_paid'] = card_summary['equity_paid'].fillna(0)
 
+# 5. Gross_Banking
 card_summary['Gross_Banking'] = card_summary['kcb_paid'] + card_summary['equity_paid']
-for col in ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking']:
-    card_summary[col] = card_summary[col].astype(float)
+
+# 6. Variance
 card_summary['Variance'] = card_summary['Gross_Banking'] - card_summary['Aspire_Zed']
 
-# Add TOTAL row
-numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance']
+# 7. kcb_recs
+# (Unmatched KCB records)
+kcb_recs_data = merged_cards[
+    (merged_cards['Source'].str.upper() == 'KCB') & (
+        merged_cards['R_R_N'].isna() | 
+        ~merged_cards['R_R_N'].isin(aspire['R_R_N'])
+    )
+]
+kcb_recs_grouped = kcb_recs_data.groupby('branch')['Purchase'].sum().reset_index()
+kcb_recs_grouped.columns = ['STORE_NAME', 'kcb_recs']
+card_summary = card_summary.merge(kcb_recs_grouped, on='STORE_NAME', how='left')
+card_summary['kcb_recs'] = card_summary['kcb_recs'].fillna(0)
+
+# 8. Equity_recs
+equity_recs_data = merged_cards[
+    (merged_cards['Source'].str.upper() == 'EQUITY') & (
+        merged_cards['R_R_N'].isna() | 
+        ~merged_cards['R_R_N'].isin(aspire['R_R_N'])
+    )
+]
+equity_recs_grouped = equity_recs_data.groupby('branch')['Purchase'].sum().reset_index()
+equity_recs_grouped.columns = ['STORE_NAME', 'Equity_recs']
+card_summary = card_summary.merge(equity_recs_grouped, on='STORE_NAME', how='left')
+card_summary['Equity_recs'] = card_summary['Equity_recs'].fillna(0)
+
+# 9. Asp_Recs (Unmatched Aspire)
+aspire_recs_data = aspire[
+    aspire['R_R_N'].isna() | ~aspire['R_R_N'].isin(merged_cards['R_R_N'])
+]
+aspire_recs_grouped = aspire_recs_data.groupby('STORE_NAME')['AMOUNT'].sum().reset_index()
+aspire_recs_grouped.columns = ['STORE_NAME', 'Asp_Recs']
+card_summary = card_summary.merge(aspire_recs_grouped, on='STORE_NAME', how='left')
+card_summary['Asp_Recs'] = card_summary['Asp_Recs'].fillna(0)
+
+# 10. Net_variance as per your formula
+card_summary['Net_variance'] = (
+    card_summary['Variance']
+    - card_summary['kcb_recs']
+    - card_summary['Equity_recs']
+    + card_summary['Asp_Recs']
+)
+
+# 11. Add TOTAL row, summing all numeric columns
+numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance', 'kcb_recs', 'Equity_recs', 'Asp_Recs', 'Net_variance']
 totals = card_summary[numeric_cols].sum()
 total_row = pd.DataFrame([{
     'No': '',
     'STORE_NAME': 'TOTAL',
-    'Aspire_Zed': totals['Aspire_Zed'],
-    'kcb_paid': totals['kcb_paid'],
-    'equity_paid': totals['equity_paid'],
-    'Gross_Banking': totals['Gross_Banking'],
-    'Variance': totals['Variance']
+    **{col: totals[col] for col in numeric_cols}
 }])
 card_summary = pd.concat([card_summary, total_row], ignore_index=True)
 
