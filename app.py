@@ -3,10 +3,10 @@ import streamlit as st
 
 st.set_page_config(layout="wide", page_title="Card Reconciliation Report", initial_sidebar_state="expanded")
 
-st.title("Card Reconciliation Report (Streamlit Version)")
+st.title("Card Reconciliation Report")
 st.write(
     "Upload your KCB, Equity, Aspire, and Card Key files in the sidebar. "
-    "All processing is done in-memory. Downloads are provided as Excel (no xlsxwriter dependency)."
+    "All processing is in-memory. Downloadable Excel reports are provided (no xlsxwriter required)."
 )
 
 # -------------------- SIDEBAR: FILE UPLOADS --------------------
@@ -87,6 +87,23 @@ if 'branch' in merged_cards.columns and 'card_check' in merged_cards.columns:
     cols.insert(branch_index + 1, 'card_check')
     merged_cards = merged_cards[cols]
 
+# Save merged cards for download
+@st.cache_data
+def to_excel_merged_cards(df):
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='merged_cards')
+    output.seek(0)
+    return output.getvalue()
+
+st.download_button(
+    "Download merged_cards.xlsx",
+    data=to_excel_merged_cards(merged_cards),
+    file_name="merged_cards.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
 # -------------------- ASPIRE PROCESSING --------------------
 aspire['CARD_NUMBER'] = aspire['CARD_NUMBER'].astype(str).str.strip()
 aspire['card_check'] = aspire['CARD_NUMBER'].apply(
@@ -109,6 +126,18 @@ aspire = aspire.rename(columns={'REF_NO': 'R_R_N'})
 aspire['R_R_N'] = aspire['R_R_N'].astype(str).str.strip()
 merged_cards['R_R_N'] = merged_cards['R_R_N'].astype(str).str.strip()
 
+# Save aspire filtered for download
+@st.cache_data
+def to_csv_aspire(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+st.download_button(
+    "Download aspire_filtered.csv",
+    data=to_csv_aspire(aspire),
+    file_name="aspire_filtered.csv",
+    mime="text/csv"
+)
+
 # -------------------- RRN MERGE (ASPIRE x BANK) --------------------
 rrntable = pd.merge(
     aspire,
@@ -118,23 +147,50 @@ rrntable = pd.merge(
     suffixes=('_aspire', '_merged')
 )
 
-# -------------------- SUMMARY TABLE PREPARATION --------------------
+# Save rrntable for download
+@st.cache_data
+def to_excel_rrntable(df):
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='rrntable')
+    output.seek(0)
+    return output.getvalue()
+
+st.download_button(
+    "Download rrntable.xlsx",
+    data=to_excel_rrntable(rrntable),
+    file_name="rrntable.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# ----------- Identify unmatched branch rows for key export -----------
+missing_branch_rows = merged_cards[merged_cards['branch'].isna()]
+@st.cache_data
+def to_csv_new_key(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+st.download_button(
+    "Download new_key_full_rows.csv (missing branch/key rows)",
+    data=to_csv_new_key(missing_branch_rows),
+    file_name="new_key_full_rows.csv",
+    mime="text/csv"
+)
+
+# -------------------- CARD SUMMARY --------------------
 aspire['AMOUNT'] = pd.to_numeric(aspire['AMOUNT'], errors='coerce')
 merged_cards['Purchase'] = pd.to_numeric(merged_cards['Purchase'], errors='coerce')
 
-# Group Aspire by STORE_NAME
 card_summary = aspire['STORE_NAME'].dropna().drop_duplicates().sort_values().reset_index(drop=True).to_frame(name='STORE_NAME')
 card_summary.index = card_summary.index + 1
 card_summary.reset_index(inplace=True)
 card_summary.rename(columns={'index': 'No'}, inplace=True)
 
-# Add Aspire_Zed
 aspire_sums = aspire.groupby('STORE_NAME')['AMOUNT'].sum().reset_index()
 aspire_sums = aspire_sums.rename(columns={'AMOUNT': 'Aspire_Zed'})
 card_summary = card_summary.merge(aspire_sums, on='STORE_NAME', how='left')
 card_summary['Aspire_Zed'] = card_summary['Aspire_Zed'].fillna(0)
 
-# Add Bank Paid (KCB, Equity)
 kcb_grouped = merged_cards[merged_cards['Source'] == 'KCB'].groupby('branch')['Purchase'].sum().reset_index().rename(columns={'branch': 'STORE_NAME', 'Purchase': 'kcb_paid'})
 equity_grouped = merged_cards[merged_cards['Source'] == 'Equity'].groupby('branch')['Purchase'].sum().reset_index().rename(columns={'branch': 'STORE_NAME', 'Purchase': 'equity_paid'})
 card_summary = card_summary.merge(kcb_grouped, on='STORE_NAME', how='left')
@@ -142,15 +198,45 @@ card_summary['kcb_paid'] = card_summary['kcb_paid'].fillna(0)
 card_summary = card_summary.merge(equity_grouped, on='STORE_NAME', how='left')
 card_summary['equity_paid'] = card_summary['equity_paid'].fillna(0)
 
-# Gross, Variance, Totals
 card_summary['Gross_Banking'] = card_summary['kcb_paid'] + card_summary['equity_paid']
 for col in ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking']:
     card_summary[col] = card_summary[col].astype(float)
 card_summary['Variance'] = card_summary['Gross_Banking'] - card_summary['Aspire_Zed']
 
-# -------------------- EXPORTED OUTPUTS --------------------
+# Add TOTAL row
+numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance']
+totals = card_summary[numeric_cols].sum()
+total_row = pd.DataFrame([{
+    'No': '',
+    'STORE_NAME': 'TOTAL',
+    'Aspire_Zed': totals['Aspire_Zed'],
+    'kcb_paid': totals['kcb_paid'],
+    'equity_paid': totals['equity_paid'],
+    'Gross_Banking': totals['Gross_Banking'],
+    'Variance': totals['Variance']
+}])
+card_summary = pd.concat([card_summary, total_row], ignore_index=True)
+
+# Save card_summary for download
 @st.cache_data
-def to_excel(**dfs):
+def to_excel_card_summary(df):
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='card_summary')
+    output.seek(0)
+    return output.getvalue()
+
+st.download_button(
+    "Download Card_summary.xlsx",
+    data=to_excel_card_summary(card_summary),
+    file_name="Card_summary.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# ----------- Final multi-sheet reconciliation export -----------
+@st.cache_data
+def to_excel_final_report(**dfs):
     from io import BytesIO
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -159,21 +245,20 @@ def to_excel(**dfs):
     output.seek(0)
     return output.getvalue()
 
-excel_bytes = to_excel(
-    card_summary=card_summary,
-    aspire=aspire,
-    merged_cards=merged_cards,
-    rrntable=rrntable
-)
-
 st.download_button(
-    "Download Reconciliation Report (Excel)",
-    data=excel_bytes,
+    "Download FULL Reconciliation_Report.xlsx (all sheets)",
+    data=to_excel_final_report(
+        card_summary=card_summary,
+        aspire=aspire,
+        merged_cards=merged_cards,
+        rrntable=rrntable,
+        missing_branch_rows=missing_branch_rows
+    ),
     file_name="Reconciliation_Report.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-# -------------------- PREVIEW PANELS --------------------
+# -------------------- DATA PREVIEW --------------------
 with st.expander("Card Summary (Final Preview)"):
     st.dataframe(card_summary)
 with st.expander("Aspire (Filtered/Aligned) Preview"):
@@ -182,6 +267,7 @@ with st.expander("Merged Cards Preview"):
     st.dataframe(merged_cards)
 with st.expander("RRN Table (Aspire x Bank Merge)"):
     st.dataframe(rrntable)
+with st.expander("Missing branch/Key rows"):
+    st.dataframe(missing_branch_rows)
 
-st.success("✅ All workflows completed. The Streamlit version preserves logic and results. "
-           "You can extend with more panels for unmatched, flagged, or detail sheets as in your notebook.")
+st.success("✅ All workflows/processes (including all downloadable tables) completed. ")
