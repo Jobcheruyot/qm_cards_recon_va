@@ -21,32 +21,16 @@ def safe_read_excel(file, name):
         st.stop()
 
 def safe_read_csv(file, name):
-    import csv
-
-    skipped_rows = []
-    file.seek(0)
     try:
-        # First, try normal read
-        df = pd.read_csv(file)
-        return df, pd.DataFrame()  # No skipped rows
-    except pd.errors.ParserError as e:
-        # If error, find skipped rows manually
-        file.seek(0)
-        reader = csv.reader((line.decode('utf-8') if isinstance(line, bytes) else line for line in file))
-        lines = list(reader)
-        header = lines[0]
-        expected_cols = len(header)
-        good = []
-        for i, row in enumerate(lines[1:], 2):
-            if len(row) == expected_cols:
-                good.append(row)
-            else:
-                skipped_rows.append([i] + row)
-        df = pd.DataFrame(good, columns=header)
-        skipped_df = pd.DataFrame(skipped_rows, columns=["LineNum"] + header[:len(skipped_rows[0])-1] if skipped_rows else header)
-        if skipped_rows:
-            st.warning(f"⚠️ Some rows in {name} CSV were skipped due to formatting issues. See 'skipped_rows' sheet in the output.")
-        return df, skipped_df
+        # Try to read with default settings
+        try:
+            return pd.read_csv(file)
+        except pd.errors.ParserError as e:
+            # Try again skipping bad lines if error occurs
+            file.seek(0)  # Reset file pointer
+            df = pd.read_csv(file, on_bad_lines='skip')
+            st.warning(f"⚠️ Some rows in {name} CSV were skipped due to formatting issues.")
+            return df
     except Exception as e:
         st.error(f"❌ Failed to read {name} CSV file: {e}")
         st.stop()
@@ -56,7 +40,7 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     # --- Read files ---
     kcb = safe_read_excel(kcb_file, "KCB")
     equity = safe_read_excel(equity_file, "Equity")
-    aspire, skipped_rows_df = safe_read_csv(aspire_file, "Aspire")
+    aspire = safe_read_csv(aspire_file, "Aspire")
     key = safe_read_excel(key_file, "Card Key")
 
     # --- Bank data alignment ---
@@ -137,6 +121,7 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     card_summary['Gross_Banking'] = pd.to_numeric(card_summary['Gross_Banking'], errors='coerce')
 
     # --- Recs logic for unmatched/variance analysis ---
+    # Step 1: RRN check (aspire vs merged_cards)
     ref_to_purchase = dict(zip(merged_cards['R_R_N'], merged_cards['Purchase']))
     aspire['rrn_check'] = aspire['R_R_N'].map(ref_to_purchase).fillna(0)
     aspire['val_check'] = aspire['AMOUNT'] - aspire['rrn_check']
@@ -155,6 +140,7 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     newbankmerged['Purchase'] = pd.to_numeric(newbankmerged['Purchase'], errors='coerce')
     newbankmerged['Check_Two'] = newbankmerged['branch'].str.replace(r'\s+', '', regex=True).str.upper() + newbankmerged['Purchase'].astype(float).astype(int).astype(str)
 
+    # Unique match logic (consume once)
     available_matches = newbankmerged['Check_Two'].tolist()
     def check_and_consume(val):
         if val in available_matches:
@@ -164,6 +150,7 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
             return 'False'
     newaspire['Amount_check'] = newaspire['Check_Two'].apply(check_and_consume)
 
+    # Same for newbankmerged vs newaspire
     aspire_available_matches = newaspire['Check_Two'].tolist()
     def check_and_consume_from_aspire(val):
         if val in aspire_available_matches:
@@ -173,6 +160,7 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
             return 'False'
     newbankmerged['Amount_check'] = newbankmerged['Check_Two'].apply(check_and_consume_from_aspire)
 
+    # newmerged_cards: truly unmatched bank records after both checks
     newmerged_cards = newbankmerged[
         (newbankmerged['Cheked_rows'].str.strip().str.lower() == 'no') &
         (newbankmerged['Amount_check'].astype(str).str.strip().str.lower() == 'false')
@@ -189,8 +177,11 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
         (newmerged_cards['Amount_check'] == 'False')
     ].copy()
 
+    # --- Add summary makeup row, variance, etc ---
+    # Remove old TOTAL row if any
     card_summary = card_summary[card_summary['STORE_NAME'] != 'TOTAL']
 
+    # Add recs columns (sum by branch/STORE_NAME)
     kcb_recs_grouped = kcb_recs_data.groupby('branch')['Purchase'].sum().reset_index()
     kcb_recs_grouped.columns = ['STORE_NAME', 'kcb_recs']
     card_summary = card_summary.merge(kcb_recs_grouped, on='STORE_NAME', how='left')
@@ -208,9 +199,11 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
             card_summary[col] = 0
         card_summary[col] = pd.to_numeric(card_summary[col], errors='coerce').fillna(0)
 
+    # --- Variance and Net_variance ---
     card_summary['Variance'] = card_summary['Gross_Banking'] - card_summary['Aspire_Zed']
     card_summary['Net_variance'] = card_summary['Variance'] - card_summary['kcb_recs'] - card_summary['Equity_recs'] + card_summary['Asp_Recs']
 
+    # --- Add TOTAL row ---
     numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking',
                     'Variance', 'kcb_recs', 'Equity_recs', 'Asp_Recs', 'Net_variance']
     totals = card_summary[numeric_cols].sum()
@@ -221,11 +214,13 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     }])
     card_summary = pd.concat([card_summary, total_row], ignore_index=True)
 
+    # --- REARRANGE COLUMNS AS REQUESTED ---
     card_summary = card_summary[
         ['No', 'STORE_NAME', 'Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance',
          'kcb_recs', 'Equity_recs', 'Asp_Recs', 'Net_variance']
     ]
 
+    # --- Export workbook ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         card_summary.to_excel(writer, sheet_name='card_summary', index=False)
@@ -235,8 +230,6 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
         merged_cards.to_excel(writer, sheet_name='merged_cards', index=False)
         aspire.to_excel(writer, sheet_name='aspire', index=False)
         rrntable.to_excel(writer, sheet_name='Aspire_recs', index=False)
-        if not skipped_rows_df.empty:
-            skipped_rows_df.to_excel(writer, sheet_name='skipped_rows', index=False)
     output.seek(0)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
