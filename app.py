@@ -1,3 +1,7 @@
+# Regenerate the Streamlit app with read_excel engine fix and defensive error handling
+streamlit_fixed_script_path = "/mnt/data/card_reconciliation_app_fixed.py"
+
+streamlit_script_with_fix = '''\
 import streamlit as st
 import pandas as pd
 import io
@@ -13,11 +17,18 @@ equity_file = st.file_uploader("Upload Equity Excel File", type=["xlsx"])
 aspire_file = st.file_uploader("Upload Aspire CSV File", type=["csv"])
 key_file = st.file_uploader("Upload Card Key Excel File", type=["xlsx"])
 
+def safe_read_excel(file, name):
+    try:
+        return pd.read_excel(file, engine="openpyxl")
+    except Exception as e:
+        st.error(f"❌ Failed to read {name} Excel file: {e}")
+        st.stop()
+
 if all([kcb_file, equity_file, aspire_file, key_file]):
-    kcb = pd.read_excel(kcb_file)
-    equity = pd.read_excel(equity_file)
+    kcb = safe_read_excel(kcb_file, "KCB")
+    equity = safe_read_excel(equity_file, "Equity")
     aspire = pd.read_csv(aspire_file)
-    card_key = pd.read_excel(key_file)
+    card_key = safe_read_excel(key_file, "Card Key")
 
     # === KCB Cleaning ===
     kcb.columns = kcb.columns.str.strip()
@@ -125,3 +136,10 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     )
 else:
     st.warning("👆 Please upload all four files to proceed.")
+'''
+
+# Save the fixed script
+with open(streamlit_fixed_script_path, "w", encoding="utf-8") as f:
+    f.write(streamlit_script_with_fix)
+
+streamlit_fixed_script_path
