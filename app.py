@@ -206,6 +206,12 @@ if all([kcb_file, equity_file, aspire_file, key_file]):
     }])
     card_summary = pd.concat([card_summary, total_row], ignore_index=True)
 
+    # --- REARRANGE COLUMNS AS REQUESTED ---
+    card_summary = card_summary[
+        ['No', 'STORE_NAME', 'Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance',
+         'kcb_recs', 'Equity_recs', 'Asp_Recs', 'Net_variance']
+    ]
+
     # --- Export workbook ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
