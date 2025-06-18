@@ -31,7 +31,7 @@ key_file = st.file_uploader("Upload Card Key Excel", type=["xlsx"])
 
 if st.button("Process and Download") and kcb_file and equity_file and aspire_file and key_file:
     try:
-        # Load
+        # Load files
         kcb = pd.read_excel(kcb_file)
         equity = pd.read_excel(equity_file)
         aspire = pd.read_csv(aspire_file)
@@ -42,7 +42,7 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         kcb.columns = kcb.columns.str.strip()
         equity.columns = equity.columns.str.strip()
 
-        # KCB column rename
+        # KCB column renaming and cleaning
         kcb_renamed = kcb.rename(columns={
             'Card No': 'Card_Number',
             'Trans Date': 'TRANS_DATE',
@@ -62,7 +62,6 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         # Final columns
         columns = ['TID', 'store', 'Card_Number', 'TRANS_DATE', 'R_R_N',
                    'Purchase', 'Commission', 'Settlement_Amount', 'Cash_Back', 'Source']
-
         kcb_final = kcb_renamed[columns]
         equity_final = equity[columns]
         merged_cards = pd.concat([kcb_final, equity_final], ignore_index=True)
@@ -76,7 +75,6 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         card_key['Col_1'] = card_key['Col_1'].astype(str).str.strip()
         card_key['Col_2'] = card_key['Col_2'].astype(str).str.strip()
         merged_cards['store'] = merged_cards['store'].astype(str).str.strip()
-
         lookup_dict = dict(zip(card_key['Col_1'], card_key['Col_2']))
         merged_cards['branch'] = merged_cards['store'].map(lookup_dict)
         cols = list(merged_cards.columns)
@@ -106,7 +104,6 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
             insert_index = cols.index('CARD_NUMBER') + 1
             cols.insert(insert_index, 'card_check')
             aspire = aspire[cols]
-
         aspire = aspire[[
             'STORE_CODE', 'STORE_NAME', 'ZED_DATE', 'TILL', 'SESSION', 'RCT',
             'CUSTOMER_NAME', 'CARD_TYPE', 'CARD_NUMBER', 'card_check', 'AMOUNT', 'REF_NO', 'RCT_TRN_DATE'
@@ -123,7 +120,7 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         # Unmatched branch
         missing_branch_rows = merged_cards[merged_cards['branch'].isna()]
 
-        # card_check in merged_cards
+        # card_check in merged_cards (repeated for safety)
         merged_cards['Card_Number'] = merged_cards['Card_Number'].astype(str).str.strip()
         merged_cards['card_check'] = merged_cards['Card_Number'].str[:4] + merged_cards['Card_Number'].str[-4:]
         if 'Source' in merged_cards.columns:
@@ -139,7 +136,6 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         merged_cards = merged_cards[merged_cards['TID'].notna() & (merged_cards['TID'].astype(str).str.strip() != '')]
 
         # RRN check/val_check for aspire
-        # Load card_key again for safety
         card_key = key.copy()
         merged_cards['REF_NO'] = merged_cards['R_R_N'].apply(clean_ref_no)
         aspire['REF_NO'] = aspire['R_R_N'].astype(str)
@@ -305,60 +301,135 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
         card_summary['Gross_Banking'] = card_summary['kcb_paid'] + card_summary['equity_paid']
         card_summary['Variance'] = card_summary['Gross_Banking'] - card_summary['Aspire_Zed']
 
-        # KCB unmatched
+        # =========================
+        # STRICT CARD RECS STEPS
+        # =========================
+
+        # === KCB unmatched strict steps ===
+        # ✅ Step 1: Filter relevant KCB unmatched records
         kcb_recs_data = newmerged_cards[
             (newmerged_cards['Source'].str.upper() == 'KCB') &
             (newmerged_cards['Amount_check'].astype(str).str.strip().str.lower() == 'false')
         ]
+        # ✅ Step 2: Ensure 'Purchase' is numeric
         kcb_recs_data['Purchase'] = pd.to_numeric(kcb_recs_data['Purchase'], errors='coerce')
+        # ✅ Drop rows where Purchase is NaN (can't sum invalids)
         kcb_recs_data = kcb_recs_data.dropna(subset=['Purchase'])
+        # ✅ Step 3: Group by branch and sum Purchase
         kcb_recs_grouped = kcb_recs_data.groupby('branch')['Purchase'].sum().reset_index()
         kcb_recs_grouped.columns = ['STORE_NAME', 'kcb_recs']
+        # ✅ Step 4: Drop existing kcb_recs if present
         if 'kcb_recs' in card_summary.columns:
             card_summary.drop(columns=['kcb_recs'], inplace=True)
+        # ✅ Step 5: Merge with card_summary
         card_summary = card_summary.merge(kcb_recs_grouped, on='STORE_NAME', how='left')
         card_summary['kcb_recs'] = card_summary['kcb_recs'].fillna(0)
+        # ✅ Step 6: Remove old TOTAL row
+        card_summary = card_summary[card_summary['STORE_NAME'] != 'TOTAL']
+        # ✅ Step 7: Ensure numeric columns are properly typed
+        numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking', 'Variance', 'kcb_recs']
+        card_summary[numeric_cols] = card_summary[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        # ✅ Step 8: Compute totals
+        totals = card_summary[numeric_cols].sum()
+        # ✅ Step 9: Build TOTAL row
+        total_row = pd.DataFrame([{
+            'No': '',
+            'STORE_NAME': 'TOTAL',
+            'Aspire_Zed': totals['Aspire_Zed'],
+            'kcb_paid': totals['kcb_paid'],
+            'equity_paid': totals['equity_paid'],
+            'Gross_Banking': totals['Gross_Banking'],
+            'Variance': totals['Variance'],
+            'kcb_recs': totals['kcb_recs']
+        }])
+        # ✅ Step 10: Append TOTAL row
+        card_summary = pd.concat([card_summary, total_row], ignore_index=True)
+        # ✅ Step 11: Display final result (Streamlit will export later)
 
-        # Equity unmatched
+        # === Equity unmatched strict steps ===
         equity_recs_data = newmerged_cards[
             (newmerged_cards['Source'].str.upper() == 'EQUITY') &
             (newmerged_cards['Amount_check'] == 'False')
         ].copy()
+        # ✅ Step 1: Ensure Purchase column is numeric
         equity_recs_data['Purchase'] = pd.to_numeric(equity_recs_data['Purchase'], errors='coerce')
+        # ✅ Step 2: Drop any rows with NaN in Purchase
         equity_recs_data = equity_recs_data.dropna(subset=['Purchase'])
+        # ✅ Step 3: Group by branch and sum Purchase
         equity_recs_grouped = equity_recs_data.groupby('branch')['Purchase'].sum().reset_index()
         equity_recs_grouped.columns = ['STORE_NAME', 'Equity_recs']
+        # ✅ Step 4: Drop old Equity_recs if exists
         if 'Equity_recs' in card_summary.columns:
             card_summary.drop(columns=['Equity_recs'], inplace=True)
+        # ✅ Step 5: Merge into card_summary
         card_summary = card_summary.merge(equity_recs_grouped, on='STORE_NAME', how='left')
         card_summary['Equity_recs'] = card_summary['Equity_recs'].fillna(0)
+        # ✅ Step 6: Remove old TOTAL row
+        card_summary = card_summary[card_summary['STORE_NAME'] != 'TOTAL']
+        # ✅ Step 7: Define all numeric columns
+        numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking',
+                        'Variance', 'kcb_recs', 'Equity_recs']
+        # ✅ Step 8: Convert all numeric columns to numeric types
+        card_summary[numeric_cols] = card_summary[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        # ✅ Step 9: Compute totals
+        totals = card_summary[numeric_cols].sum()
+        # ✅ Step 10: Build TOTAL row
+        total_row = pd.DataFrame([{
+            'No': '',
+            'STORE_NAME': 'TOTAL',
+            'Aspire_Zed': totals['Aspire_Zed'],
+            'kcb_paid': totals['kcb_paid'],
+            'equity_paid': totals['equity_paid'],
+            'Gross_Banking': totals['Gross_Banking'],
+            'Variance': totals['Variance'],
+            'kcb_recs': totals['kcb_recs'],
+            'Equity_recs': totals['Equity_recs']
+        }])
+        # ✅ Step 11: Append TOTAL row
+        card_summary = pd.concat([card_summary, total_row], ignore_index=True)
+        # ✅ Step 12: Display result (Streamlit will export later)
 
-        # newaspire unmatched
+        # === Aspire unmatched strict steps ===
         aspire_recs_data = newaspire[
             newaspire['Amount_check'].astype(str).str.strip().str.lower() == 'false'
         ]
+        # ✅ Step 2: Ensure AMOUNT is numeric
         aspire_recs_data['AMOUNT'] = pd.to_numeric(aspire_recs_data['AMOUNT'], errors='coerce')
+        # ✅ Step 3: Drop rows with NaN in AMOUNT before summing
         aspire_recs_data = aspire_recs_data.dropna(subset=['AMOUNT'])
+        # ✅ Step 4: Group by STORE_NAME and sum AMOUNT
         aspire_recs_grouped = aspire_recs_data.groupby('STORE_NAME')['AMOUNT'].sum().reset_index()
         aspire_recs_grouped.columns = ['STORE_NAME', 'Asp_Recs']
+        # ✅ Step 5: Drop old Asp_Recs if exists
         if 'Asp_Recs' in card_summary.columns:
             card_summary.drop(columns=['Asp_Recs'], inplace=True)
+        # ✅ Step 6: Merge into card_summary
         card_summary = card_summary.merge(aspire_recs_grouped, on='STORE_NAME', how='left')
         card_summary['Asp_Recs'] = card_summary['Asp_Recs'].fillna(0)
-
-        # Remove old TOTAL row if exists
+        # ✅ Step 7: Remove old TOTAL row
         card_summary = card_summary[card_summary['STORE_NAME'] != 'TOTAL']
-        # Final totals row
-        all_possible = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking',
+        # ✅ Step 8: Recalculate TOTAL row including Asp_Recs
+        numeric_cols = ['Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking',
                         'Variance', 'kcb_recs', 'Equity_recs', 'Asp_Recs']
-        numeric_cols = [col for col in all_possible if col in card_summary.columns]
         card_summary[numeric_cols] = card_summary[numeric_cols].apply(pd.to_numeric, errors='coerce')
         totals = card_summary[numeric_cols].sum()
-        total_row = {'No': '', 'STORE_NAME': 'TOTAL'}
-        for col in numeric_cols:
-            total_row[col] = totals[col]
-        card_summary = pd.concat([card_summary, pd.DataFrame([total_row])], ignore_index=True)
+        # ✅ Step 9: Build TOTAL row
+        total_row = pd.DataFrame([{
+            'No': '',
+            'STORE_NAME': 'TOTAL',
+            'Aspire_Zed': totals['Aspire_Zed'],
+            'kcb_paid': totals['kcb_paid'],
+            'equity_paid': totals['equity_paid'],
+            'Gross_Banking': totals['Gross_Banking'],
+            'Variance': totals['Variance'],
+            'kcb_recs': totals['kcb_recs'],
+            'Equity_recs': totals['Equity_recs'],
+            'Asp_Recs': totals['Asp_Recs']
+        }])
+        # ✅ Step 10: Append total row
+        card_summary = pd.concat([card_summary, total_row], ignore_index=True)
 
+        # ======= Net variance & Reordering columns =======
         for col in ['Variance', 'kcb_recs', 'Equity_recs', 'Asp_Recs']:
             if col not in card_summary.columns:
                 card_summary[col] = 0
@@ -368,8 +439,6 @@ if st.button("Process and Download") and kcb_file and equity_file and aspire_fil
             - card_summary['Equity_recs']
             + card_summary['Asp_Recs']
         )
-
-        # Order columns (if present)
         final_cols = ['No', 'STORE_NAME', 'Aspire_Zed', 'kcb_paid', 'equity_paid', 'Gross_Banking',
                       'Variance', 'kcb_recs', 'Equity_recs', 'Asp_Recs', 'Net_variance']
         card_summary = card_summary[[col for col in final_cols if col in card_summary.columns]]
