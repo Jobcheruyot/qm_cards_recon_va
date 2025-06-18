@@ -22,7 +22,15 @@ def safe_read_excel(file, name):
 
 def safe_read_csv(file, name):
     try:
-        return pd.read_csv(file)
+        # Try to read with default settings
+        try:
+            return pd.read_csv(file)
+        except pd.errors.ParserError as e:
+            # Try again skipping bad lines if error occurs
+            file.seek(0)  # Reset file pointer
+            df = pd.read_csv(file, on_bad_lines='skip')
+            st.warning(f"⚠️ Some rows in {name} CSV were skipped due to formatting issues.")
+            return df
     except Exception as e:
         st.error(f"❌ Failed to read {name} CSV file: {e}")
         st.stop()
