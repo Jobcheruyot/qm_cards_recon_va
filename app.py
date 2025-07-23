@@ -64,16 +64,17 @@ if all([kcb_file, equity_file, coop_file, aspire_file, key_file]):
     coop_cleaned = coop_raw.dropna(subset=["TRANSACTION DATE"]).copy()
     coop_cleaned['Source'] = 'coop'
     coop_map = {
-        "TERMINAL": "TID",
-        "LOCATION": "store",
-        "CARD": "Card_Number",
-        "TRANSACTION DATE": "TRANS_DATE",
-        "RRN CODE": "R_R_N",
-        "TRANSACTION AMOUNT": "Purchase",
-        "BANK COMM": "Commission",
-        "NET PAID": "Settlement_Amount",
-        "CASH BACK": "Cash_Back",
-        "Source": "Source"
+
+    "TERMINAL": "TERMINAL",
+    "LOCATION": "store",
+    "CARD": "Card_Number",
+    "TRANSACTION DATE": "TRANS_DATE",
+    "RRN CODE": "R_R_N",
+    "TRANSACTION AMOUNT": "Purchase",
+    "BANK COMM": "Commission",
+    "NET PAID": "Settlement_Amount",
+    "CASH BACK": "Cash_Back",
+    "Source": "Source"
     }
     coop_selected = coop_cleaned[list(coop_map.keys())].rename(columns=coop_map)
 
