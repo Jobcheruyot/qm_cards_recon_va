@@ -1,9 +1,5 @@
-streamlit>=1.48.0
-pandas>=2.3.1
-setuptools
-numpy==1.24.2
-openpyxl>=3.1.5
-xlrd>=2.0.2
-nbconvert>=7.16.6
-nbformat>=5.10.4
-xlsxwriter>=3.2.5
+streamlit
+pandas
+numpy
+openpyxl
+xlsxwriter
